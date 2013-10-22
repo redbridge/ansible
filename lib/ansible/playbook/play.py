@@ -21,9 +21,11 @@ from ansible.utils.template import template
 from ansible import utils
 from ansible import errors
 from ansible.playbook.task import Task
+import ansible.constants as C
 import pipes
 import shlex
 import os
+import sys
 
 class Play(object):
 
@@ -72,6 +74,8 @@ class Play(object):
         # We first load the vars files from the datastructure
         # so we have the default variables to pass into the roles
         self.vars_files = ds.get('vars_files', [])
+        if not isinstance(self.vars_files, list):
+            raise errors.AnsibleError('vars_files must be a list')
         self._update_vars_files_for_host(None)
 
         # now we load the roles into the datastructure
@@ -81,6 +85,8 @@ class Play(object):
         # and finally re-process the vars files as they may have
         # been updated by the included roles
         self.vars_files = ds.get('vars_files', [])
+        if not isinstance(self.vars_files, list):
+            raise errors.AnsibleError('vars_files must be a list')
         self._update_vars_files_for_host(None)
 
         # template everything to be efficient, but do not pre-mature template
@@ -147,16 +153,27 @@ class Play(object):
             role_vars = orig_path
             orig_path = role_name
 
-        path = utils.path_dwim(self.basedir, os.path.join('roles', orig_path))
-        if not os.path.isdir(path) and not orig_path.startswith(".") and not orig_path.startswith("/"):
-            path2 = utils.path_dwim(self.basedir, orig_path)
-            if not os.path.isdir(path2):
-                raise errors.AnsibleError("cannot find role in %s or %s" % (path, path2))
-            path = path2
-        elif not os.path.isdir(path):
-            raise errors.AnsibleError("cannot find role in %s" % (path))
+        role_path = None
 
-        return (path, role_vars)
+        possible_paths = [
+            utils.path_dwim(self.basedir, os.path.join('roles', orig_path)),
+            utils.path_dwim(self.basedir, orig_path)
+        ]
+
+        if C.DEFAULT_ROLES_PATH:
+            search_locations = C.DEFAULT_ROLES_PATH.split(os.pathsep)
+            for loc in search_locations:
+                possible_paths.append(utils.path_dwim(loc, orig_path))
+
+        for path_option in possible_paths:
+            if os.path.isdir(path_option):
+                role_path = path_option
+                break
+
+        if role_path is None:
+            raise errors.AnsibleError("cannot find role in %s" % " or ".join(possible_paths))
+
+        return (role_path, role_vars)
 
     def _build_role_dependencies(self, roles, dep_stack, passed_vars={}, level=0):
         # this number is arbitrary, but it seems sane
@@ -191,11 +208,17 @@ class Play(object):
                             if meta_data:
                                 allow_dupes = utils.boolean(meta_data.get('allow_duplicates',''))
 
-                        if not allow_dupes:
-                            if dep in self.included_roles:
-                                continue
-                            else:
-                                self.included_roles.append(dep)
+                        # if tags are set from this role, merge them
+                        # into the tags list for the dependent role
+                        if "tags" in passed_vars:
+                            for included_role_dep in dep_stack:
+                                included_dep_name = included_role_dep[0]
+                                included_dep_vars = included_role_dep[2]
+                                if included_dep_name == dep:
+                                    if "tags" in included_dep_vars:
+                                        included_dep_vars["tags"] = list(set(included_dep_vars["tags"] + passed_vars["tags"]))
+                                    else:
+                                        included_dep_vars["tags"] = passed_vars["tags"].copy()
 
                         dep_vars = utils.combine_vars(passed_vars, dep_vars)
                         dep_vars = utils.combine_vars(role_vars, dep_vars)
@@ -211,8 +234,25 @@ class Play(object):
                             dep_defaults_data = utils.parse_yaml_from_file(defaults)
                         if 'role' in dep_vars:
                             del dep_vars['role']
+
+                        if "tags" in passed_vars:
+                            if not self._is_valid_tag(passed_vars["tags"]):
+                                # one of the tags specified for this role was in the
+                                # skip list, or we're limiting the tags and it didn't 
+                                # match one, so we just skip it completely
+                                continue
+
+                        if not allow_dupes:
+                            if dep in self.included_roles:
+                                # skip back to the top, since we don't want to
+                                # do anything else with this role
+                                continue
+                            else:
+                                self.included_roles.append(dep)
+
                         self._build_role_dependencies([dep], dep_stack, passed_vars=dep_vars, level=level+1)
                         dep_stack.append([dep,dep_path,dep_vars,dep_defaults_data])
+
             # only add the current role when we're at the top level,
             # otherwise we'll end up in a recursive loop 
             if level == 0:
@@ -228,7 +268,7 @@ class Play(object):
                 new_default_vars = utils.parse_yaml_from_file(filename)
                 if new_default_vars:
                     if type(new_default_vars) != dict:
-                        raise errors.AnsibleError("%s must be stored as dictonary/hash: %s" % (filename, type(new_default_vars)))
+                        raise errors.AnsibleError("%s must be stored as dictionary/hash: %s" % (filename, type(new_default_vars)))
 
                     default_vars = utils.combine_vars(default_vars, new_default_vars)
 
@@ -286,8 +326,8 @@ class Play(object):
             library   = utils.path_dwim(self.basedir, os.path.join(role_path, 'library'))
 
             missing = lambda f: not os.path.isfile(f)
-            if missing(task) and missing(handler) and missing(vars_file) and missing(meta_file) and missing(library):
-                raise errors.AnsibleError("found role at %s, but cannot find %s or %s or %s or %s or %s" % (role_path, task, handler, vars_file, meta_file, library))
+            if missing(task) and missing(handler) and missing(vars_file) and missing(defaults_file) and missing(meta_file) and missing(library):
+                raise errors.AnsibleError("found role at %s, but cannot find %s or %s or %s or %s or %s or %s" % (role_path, task, handler, vars_file, defaults_file, meta_file, library))
 
             if isinstance(role, dict):
                 role_name = role['role']
@@ -365,15 +405,29 @@ class Play(object):
 
     # *************************************************
 
-    def _load_tasks(self, tasks, vars={}, default_vars={}, sudo_vars={}, additional_conditions=[], original_file=None, role_name=None):
+    def _load_tasks(self, tasks, vars=None, default_vars=None, sudo_vars=None, additional_conditions=None, original_file=None, role_name=None):
         ''' handle task and handler include statements '''
 
         results = []
         if tasks is None:
             # support empty handler files, and the like.
             tasks = []
+        if additional_conditions is None:
+            additional_conditions = []
+        if vars is None:
+            vars = {}
+        if default_vars is None:
+            default_vars = {}
+        if sudo_vars is None:
+            sudo_vars = {}
+
+        old_conditions = list(additional_conditions)
 
         for x in tasks:
+
+            # prevent assigning the same conditions to each task on an include
+            included_additional_conditions = list(old_conditions)
+
             if not isinstance(x, dict):
                 raise errors.AnsibleError("expecting dict; got: %s" % x)
 
@@ -403,6 +457,7 @@ class Play(object):
                 include_vars = {}
                 for k in x:
                     if k.startswith("with_"):
+                        utils.deprecated("include + with_items is an unsupported feature and has been undocumented for many releases because of this", "1.5")
                         plugin_name = k[5:]
                         if plugin_name not in utils.plugins.lookup_loader:
                             raise errors.AnsibleError("cannot find lookup plugin named %s for usage in with_%s" % (plugin_name, plugin_name))
@@ -453,9 +508,11 @@ class Play(object):
                         for x in data:
                             if 'include' in x:
                                 x['role_name'] = new_role
-                    results += self._load_tasks(data, mv, default_vars, included_sudo_vars, included_additional_conditions, original_file=include_filename, role_name=new_role)
+                    loaded = self._load_tasks(data, mv, default_vars, included_sudo_vars, list(included_additional_conditions), original_file=include_filename, role_name=new_role)
+                    results += loaded
             elif type(x) == dict:
-                results.append(Task(self,x,module_vars=task_vars,default_vars=default_vars,additional_conditions=additional_conditions,role_name=role_name))
+                task = Task(self,x,module_vars=task_vars,default_vars=default_vars,additional_conditions=list(additional_conditions),role_name=role_name)
+                results.append(task)
             else:
                 raise Exception("unexpected task type")
 
@@ -464,6 +521,20 @@ class Play(object):
                 x.tags.extend(self.tags)
 
         return results
+
+    # *************************************************
+
+    def _is_valid_tag(self, tag_list):
+        """
+        Check to see if the list of tags passed in is in the list of tags 
+        we only want (playbook.only_tags), or if it is not in the list of 
+        tags we don't want (playbook.skip_tags).
+        """
+        matched_skip_tags = set(tag_list) & set(self.playbook.skip_tags)
+        matched_only_tags = set(tag_list) & set(self.playbook.only_tags)
+        if len(matched_skip_tags) > 0 or (self.playbook.only_tags != ['all'] and len(matched_only_tags) == 0):
+            return False
+        return True
 
     # *************************************************
 

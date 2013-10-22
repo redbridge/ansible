@@ -38,7 +38,7 @@ class Inventory(object):
 
     __slots__ = [ 'host_list', 'groups', '_restriction', '_also_restriction', '_subset', 
                   'parser', '_vars_per_host', '_vars_per_group', '_hosts_cache', '_groups_list',
-                  '_vars_plugins', '_playbook_basedir']
+                  '_pattern_cache', '_vars_plugins', '_playbook_basedir']
 
     def __init__(self, host_list=C.DEFAULT_HOST_LIST):
 
@@ -53,6 +53,7 @@ class Inventory(object):
         self._vars_per_group = {}
         self._hosts_cache    = {}
         self._groups_list    = {} 
+        self._pattern_cache  = {}
 
         # to be set by calling set_playbook_basedir by ansible-playbook
         self._playbook_basedir = None
@@ -194,9 +195,14 @@ class Inventory(object):
         take into account negative matches.
         """
 
+        if pattern in self._pattern_cache:
+            return self._pattern_cache[pattern]
+
         (name, enumeration_details) = self._enumeration_info(pattern)
         hpat = self._hosts_in_unenumerated_pattern(name)
-        return self._apply_ranges(pattern, hpat)
+        result = self._apply_ranges(pattern, hpat)
+        self._pattern_cache[pattern] = result
+        return result
 
     def _enumeration_info(self, pattern):
         """
@@ -247,7 +253,6 @@ class Inventory(object):
         else:
             return [ hosts[left] ]
 
-    # TODO: cache this logic so if called a second time the result is not recalculated
     def _hosts_in_unenumerated_pattern(self, pattern):
         """ Get all host names matching the pattern """
 
@@ -263,6 +268,10 @@ class Inventory(object):
                     if host not in results:
                         results.append(host)
         return results
+
+    def clear_pattern_cache(self):
+        ''' called exclusively by the add_host plugin to allow patterns to be recalculated '''
+        self._pattern_cache = {}
 
     def groups_for_host(self, host):
         results = []

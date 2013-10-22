@@ -178,7 +178,7 @@ def main():
     if src:
         src = os.path.expanduser(src)
 
-    if src is not None and os.path.isdir(path) and state != "link":
+    if src is not None and os.path.isdir(path) and state not in ["link", "absent"]:
         params['path'] = path = os.path.join(path, os.path.basename(src))
 
     file_args = module.load_file_common_arguments(params)
@@ -200,8 +200,13 @@ def main():
         elif os.stat(path).st_nlink > 1:
             prev_state = 'hard'
         else:
-            # could be many other tings, but defaulting to file
+            # could be many other things, but defaulting to file
             prev_state = 'file'
+
+    recurse = params['recurse']
+
+    if recurse and state == 'file' and prev_state == 'directory':
+        state = 'directory'
 
     if prev_state != 'absent' and state == 'absent':
         try:
@@ -226,7 +231,7 @@ def main():
         module.exit_json(path=path, changed=True)
 
     if prev_state != 'absent' and prev_state != state:
-        if not (force and prev_state == 'file' and state == 'link') and state != 'touch':
+        if not (force and (prev_state == 'file' or prev_state == 'directory') and state == 'link') and state != 'touch':
             module.fail_json(path=path, msg='refusing to convert between %s and %s for %s' % (prev_state, state, src))
 
     if prev_state == 'absent' and state == 'absent':
@@ -248,7 +253,6 @@ def main():
             changed = True
 
         changed = module.set_directory_attributes_if_different(file_args, changed)
-        recurse = params['recurse']
         if recurse:
             for root,dirs,files in os.walk( file_args['path'] ):
                 for dir in dirs:

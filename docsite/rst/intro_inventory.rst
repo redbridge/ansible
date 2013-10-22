@@ -128,7 +128,7 @@ variables to groups.  These variables can be used by /usr/bin/ansible-playbook, 
    southeast
    northeast
    southwest
-   southeast
+   northwest
 
 If you need to store lists or hash data, or prefer to keep host and group specific variables
 separate from the inventory file, see the next section.
@@ -144,7 +144,7 @@ In addition to the storing variables directly in the INI file, host
 and group variables can be stored in individual files relative to the
 inventory file.  
 
-These variable files are in YAML format.  See `YAMLSyntax` if you are new to YAML.
+These variable files are in YAML format.  See :doc:`YAMLSyntax` if you are new to YAML.
 
 Assuming the inventory file path is::
 

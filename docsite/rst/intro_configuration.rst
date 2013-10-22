@@ -133,6 +133,19 @@ different locations::
 
 Most users will not need to use this feature.  See :doc:`developing_plugins` for more details
 
+.. _deprecation_warnings:
+
+deprecation_warnings
+====================
+
+.. versionadded:: 1.3
+
+Allows disabling of deprecating warnings in ansible-playbook output::
+
+   deprecation_warnings = True
+
+Deprecation warnings indicate usage of legacy features that are slated for removal in a future release of Ansible.
+
 .. _display_skipped_hosts:
 
 display_skipped_hosts
@@ -274,7 +287,10 @@ the user running Ansible has permissions on the logfile.
 
     log_path=/var/log/ansible.log
 
-This behavior is not on by default.
+This behavior is not on by default.  Note that ansible will, without this setting, record module arguments called to the
+syslog of managed machines.  Password arguments are excluded.
+
+For Enterprise users seeking more detailed logging history, you may be interested in `AnsibleWorks AWX <http://ansibleworks.com/ansibleworks-awx>`_.
 
 .. _lookup_plugins:
 
@@ -386,6 +402,22 @@ This is the default username ansible will connect as for /usr/bin/ansible-playbo
 always default to the current user::
 
     remote_user = root
+
+.. _roles_path:
+
+roles_path
+==========
+
+.. versionadded: '1.4'
+
+The roles path indicate additional directories beyond the 'roles/' subdirectory of a playbook project to search to find Ansible
+roles.  For instance, if there was a source control repository of common roles and a different repository of playbooks, you might
+choose to establish a convention to checkout roles in /opt/mysite/roles like so::
+
+    roles_path = /opt/mysite/roles
+
+Roles will be first searched for in the playbook directory.  Should a role not be found, it will indicate all the possible paths
+that were searched.
 
 .. _sudo_exe:
 

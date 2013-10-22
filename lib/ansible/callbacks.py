@@ -144,6 +144,10 @@ def display(msg, color=None, stderr=False, screen_only=False, log_only=False, ru
 def call_callback_module(method_name, *args, **kwargs):
 
     for callback_plugin in callback_plugins:
+        # a plugin that set self.disabled to True will not be called
+        # see osx_say.py example for such a plugin
+        if getattr(callback_plugin, 'disabled', False):
+            continue
         methods = [
             getattr(callback_plugin, method_name, None),
             getattr(callback_plugin, 'on_any', None)
@@ -421,7 +425,11 @@ class CliRunnerCallbacks(DefaultRunnerCallbacks):
 class PlaybookRunnerCallbacks(DefaultRunnerCallbacks):
     ''' callbacks used for Runner() from /usr/bin/ansible-playbook '''
 
-    def __init__(self, stats, verbose=utils.VERBOSITY):
+    def __init__(self, stats, verbose=None):
+
+        if verbose is None:
+            verbose = utils.VERBOSITY
+
         self.verbose = verbose
         self.stats = stats
         self._async_notified = {}
@@ -476,7 +484,7 @@ class PlaybookRunnerCallbacks(DefaultRunnerCallbacks):
 
         host_result2 = host_result.copy()
         host_result2.pop('invocation', None)
-        verbose_always = host_result2.pop('verbose_always', None)
+        verbose_always = host_result2.pop('verbose_always', False)
         changed = host_result.get('changed', False)
         ok_or_changed = 'ok'
         if changed:
@@ -485,7 +493,7 @@ class PlaybookRunnerCallbacks(DefaultRunnerCallbacks):
         # show verbose output for non-setup module results if --verbose is used
         msg = ''
         if (not self.verbose or host_result2.get("verbose_override",None) is not
-                None) and verbose_always is None:
+                None) and not verbose_always:
             if item:
                 msg = "%s: [%s] => (item=%s)" % (ok_or_changed, host, item)
             else:
@@ -494,10 +502,10 @@ class PlaybookRunnerCallbacks(DefaultRunnerCallbacks):
         else:
             # verbose ...
             if item:
-                msg = "%s: [%s] => (item=%s) => %s" % (ok_or_changed, host, item, utils.jsonify(host_result2))
+                msg = "%s: [%s] => (item=%s) => %s" % (ok_or_changed, host, item, utils.jsonify(host_result2, format=verbose_always))
             else:
                 if 'ansible_job_id' not in host_result or 'finished' in host_result2:
-                    msg = "%s: [%s] => %s" % (ok_or_changed, host, utils.jsonify(host_result2))
+                    msg = "%s: [%s] => %s" % (ok_or_changed, host, utils.jsonify(host_result2, format=verbose_always))
 
         if msg != '':
             if not changed:

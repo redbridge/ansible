@@ -19,6 +19,7 @@ from ansible import errors
 from ansible import utils
 import os
 import ansible.utils.template as template
+import sys
 
 class Task(object):
 
@@ -27,7 +28,7 @@ class Task(object):
         'notify', 'module_name', 'module_args', 'module_vars', 'default_vars',
         'play', 'notified_by', 'tags', 'register', 'role_name',
         'delegate_to', 'first_available_file', 'ignore_errors',
-        'local_action', 'transport', 'sudo', 'sudo_user', 'sudo_pass',
+        'local_action', 'transport', 'sudo', 'remote_user', 'sudo_user', 'sudo_pass',
         'items_lookup_plugin', 'items_lookup_terms', 'environment', 'args',
         'any_errors_fatal', 'changed_when', 'failed_when', 'always_run', 'delay', 'retries', 'until'
     ]
@@ -36,11 +37,11 @@ class Task(object):
     VALID_KEYS = [
          'name', 'meta', 'action', 'only_if', 'async', 'poll', 'notify',
          'first_available_file', 'include', 'tags', 'register', 'ignore_errors',
-         'delegate_to', 'local_action', 'transport', 'sudo', 'sudo_user',
+         'delegate_to', 'local_action', 'transport', 'remote_user', 'sudo', 'sudo_user',
          'sudo_pass', 'when', 'connection', 'environment', 'args',
          'any_errors_fatal', 'changed_when', 'failed_when', 'always_run', 'delay', 'retries', 'until'
     ]
-    
+
     def __init__(self, play, ds, module_vars=None, default_vars=None, additional_conditions=None, role_name=None):
         ''' constructor loads from a task or handler datastructure '''
 
@@ -80,6 +81,10 @@ class Task(object):
 
             # code to allow "with_glob" and to reference a lookup plugin named glob
             elif x.startswith("with_"):
+
+                if isinstance(ds[x], basestring) and ds[x].lstrip().startswith("{{"):
+                    utils.warning("It is unneccessary to use '{{' in loops, leave variables in loop expressions bare.")
+
                 plugin_name = x.replace("with_","")
                 if plugin_name in utils.plugins.lookup_loader:
                     ds['items_lookup_plugin'] = plugin_name
@@ -89,8 +94,12 @@ class Task(object):
                     raise errors.AnsibleError("cannot find lookup plugin named %s for usage in with_%s" % (plugin_name, plugin_name))
 
             elif x in [ 'changed_when', 'failed_when', 'when']:
+                if isinstance(ds[x], basestring) and ds[x].lstrip().startswith("{{"):
+                    utils.warning("It is unneccessary to use '{{' in conditionals, leave variables in loop expressions bare.")
                 ds[x] = "jinja2_compare %s" % (ds[x])
             elif x.startswith("when_"):
+                utils.deprecated("The 'when_' conditional is a deprecated syntax as of 1.2. Switch to using the regular unified 'when' statements as described in ansibleworks.com/docs/.","1.5")
+
                 if 'when' in ds:
                     raise errors.AnsibleError("multiple when_* statements specified in task %s" % (ds.get('name', ds['action'])))
                 when_name = x.replace("when_","")
@@ -125,6 +134,14 @@ class Task(object):
         # rather than simple key=value args on the options line, these represent structured data and the values
         # can be hashes and lists, not just scalars
         self.args         = ds.get('args', {})
+
+        # get remote_user for task, then play, then playbook
+        if ds.get('remote_user') is not None:
+            self.remote_user      = ds.get('remote_user')
+        elif ds.get('remote_user', play.remote_user) is not None:
+            self.remote_user      = ds.get('remote_user', play.remote_user)
+        else:
+            self.remote_user      = ds.get('remote_user', play.playbook.remote_user)
 
         if self.sudo:
             self.sudo_user    = ds.get('sudo_user', play.sudo_user)
@@ -172,6 +189,10 @@ class Task(object):
 
         # load various attributes
         self.only_if = ds.get('only_if', 'True')
+
+        if self.only_if != 'True':
+            utils.deprecated("only_if is a very old feature and has been obsolete since 0.9, please switch to the 'when' conditional as described at http://ansibleworks.com/docs","1.5")
+
         self.when    = ds.get('when', None)
         self.changed_when = ds.get('changed_when', None)
 
@@ -261,6 +282,6 @@ class Task(object):
             self.only_if = utils.compile_when_to_only_if(self.when)
 
         if additional_conditions:
-            self.only_if = [ self.only_if ] 
-            self.only_if.extend(additional_conditions)
-
+            new_conditions = additional_conditions
+            new_conditions.append(self.only_if)
+            self.only_if = new_conditions
