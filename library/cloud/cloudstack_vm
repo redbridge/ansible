@@ -25,7 +25,7 @@ except ImportError:
 DOCUMENTATION = '''
 ---
 module: cloudstack_vm
-short_description: Create/Delete VMs from Cloudstack
+short_description: Create/Delete VMs in Cloudstack
 description:
    - Create or Remove virtual machines from Cloudstack.
 options:
@@ -49,9 +49,9 @@ options:
         - Indicate desired state of the resource
      choices: ['present', 'absent', 'stopped']
      default: present
-   name:
+   names:
      description:
-        - Name of the provisioned vm
+        - Names of the provisioned vm's, this will controll the number of vm's beeing created
      required: true
      default: None
    template_id:
@@ -66,7 +66,7 @@ options:
      default: None
    key_name:
      description:
-        - The key pair name to be used when creating the vm
+        - The ssh key pair name to be used when creating the vm
      required: false
      default: None
    network_id:
@@ -74,9 +74,20 @@ options:
         - The id of the network to provision the vm in
      required: false
      default: None
-   meta:
+   use_private_ip:
      description:
-        - A list of key value pairs that should be provided as a metadata to the new VM
+       - if set, use the instnace private ip as primary address
+     required: false
+     default: "false"
+     aliases: []
+   user_data:
+     description:
+        - A string containing the user data provided to the vm
+     required: false
+     default: None
+   user_data_file:
+     description:
+        - A file containing the user data provided to the vm
      required: false
      default: None
    wait:
@@ -89,25 +100,62 @@ options:
         - The amount of time the module should wait for the VM to get into active state
      required: false
      default: 180
-requirements: ["molnctrl"]
+requirements: [ "libcloud" ]
+author: Magnus Bengtsson <mbengtsson@redbridge.se>
 '''
 
 EXAMPLES = '''
 # Creates a new VM and attaches to a network and passes metadata to the instance
-- cloudstack_vm:
+- local_action:
+       module: cloudstack_vm
        state: present
        api_key: 1234567890
        secret_key: 123456789
        api_host: cloud.redbridge.se
-       name: vm1
+       names: vm1
        template_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
        network_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
        offering_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
        key_name: ansible_key
        wait_for: 200
-       meta:
-         hostname: test1
-         group: uge_master
+       use_private_ip: yes
+       user_data_file: vm1.cloud-init
+
+# Create a few vm's in Cloudstack and run some tasks on them
+- name: Create a sandbox instance
+  hosts: localhost
+  vars:
+    names: webnode-1,webnode-2,webnode-3
+    state: present
+    template_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
+    network_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
+    offering_id: 4f905f38-e52a-43d2-b6ec-754a13ffb529
+  tasks:
+    - name: Launch instances
+      local_action: gce instance_names=${names} machine_type=${machine_type}
+                    image=${image} zone=${zone}
+      register: gce
+    - name: Wait for SSH to come up
+      local_action: wait_for host=${item.public_ip} port=22 delay=10
+                    timeout=60 state=started
+      with_items: ${gce.instance_data}
+
+- name: Configure instance(s)
+  hosts: launched
+  sudo: True
+  roles:
+    - my_awesome_role
+    - my_awesome_tasks
+
+- name: Terminate instances
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Terminate instances that were previously launched
+      local_action:
+        module: gce
+        state: 'absent'
+        instance_names: ${gce.instance_names}
 '''
 
 def _delete_server(module, nova):
